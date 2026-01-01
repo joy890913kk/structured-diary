@@ -24,6 +24,7 @@ model Item {
   category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   categoryId String
   name       String
+  emoji      String?
   order      Int      @default(0)
   isActive   Boolean  @default(true)
   entries    Entry[]

@@ -7,66 +7,31 @@ import type { Category, Item } from "@/lib/types";
 import Picker from "@emoji-mart/react";
 import data from "@emoji-mart/data";
 
-const LS_CATEGORIES = "sd_categories_v1";
-
-
 export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newItemName, setNewItemName] = useState<Record<string, string>>({});
 
-
-  // ✅ 哪個 item 的 emoji picker 正在打開
   const [emojiPickerForItemId, setEmojiPickerForItemId] = useState<string | null>(null);
-
-  // 用來做「點外面關閉」
   const pickerWrapRef = useRef<HTMLDivElement | null>(null);
 
-  // -----------------------------
-  // Mock initial load
-  // -----------------------------
   useEffect(() => {
-    const raw = localStorage.getItem(LS_CATEGORIES);
-    if (raw) {
+    async function loadCategories() {
       try {
-        const saved = JSON.parse(raw);
-        setCategories(saved);
+        setLoading(true);
+        const res = await fetch("/api/categories?includeInactive=true");
+        const data = await res.json();
+        setCategories(data);
+      } catch (error) {
+        console.error("Failed to load categories:", error);
+      } finally {
         setLoading(false);
-        return;
-      } catch {}
+      }
     }
-  
-    const mockCategories: Category[] = [
-      {
-        id: "cat_work",
-        name: "Work",
-        isActive: true,
-        order: 1,
-        items: [
-          { id: "item_plan", name: "Plan", isActive: true, order: 1 } as Item,
-          { id: "item_execute", name: "Execute", isActive: true, order: 2 } as Item,
-        ],
-      },
-      {
-        id: "cat_health",
-        name: "Health",
-        isActive: true,
-        order: 2,
-        items: [{ id: "item_run", name: "Run", isActive: true, order: 1 } as Item],
-      },
-    ];
-  
-    setCategories(mockCategories);
-    setLoading(false);
+    loadCategories();
   }, []);
-  
-  useEffect(() => {
-    if (loading) return;
-    localStorage.setItem(LS_CATEGORIES, JSON.stringify(categories));
-  }, [categories, loading]);
 
-  // 點外面關閉 emoji picker
   useEffect(() => {
     function onDown(e: MouseEvent) {
       if (!emojiPickerForItemId) return;
@@ -79,29 +44,49 @@ export default function SettingsPage() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [emojiPickerForItemId]);
 
-  // -----------------------------
-  // Category actions (mock)
-  // -----------------------------
-  const addCategory = () => {
+  const reloadCategories = async () => {
+    try {
+      const res = await fetch("/api/categories?includeInactive=true");
+      const data = await res.json();
+      setCategories(data);
+    } catch (error) {
+      console.error("Failed to reload categories:", error);
+    }
+  };
+
+  const addCategory = async () => {
     const name = newCategoryName.trim();
     if (!name) return;
 
-    const newCategory: Category = {
-      id: `cat_${Date.now()}`,
-      name,
-      isActive: true,
-      order: categories.length + 1,
-      items: [],
-    };
-
-    setCategories((prev) => [...prev, newCategory]);
-    setNewCategoryName("");
+    try {
+      const res = await fetch("/api/categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, color: "#3b82f6" }),
+      });
+      await res.json();
+      setNewCategoryName("");
+      await reloadCategories();
+    } catch (error) {
+      console.error("Failed to add category:", error);
+      alert("Failed to add category");
+    }
   };
 
-  const updateCategory = (categoryId: string, updates: Partial<Category>) => {
+  const updateCategory = async (categoryId: string, updates: Partial<Category>) => {
     setCategories((prev) =>
       prev.map((cat) => (cat.id === categoryId ? { ...cat, ...updates } : cat))
     );
+
+    try {
+      await fetch(`/api/categories/${categoryId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+    } catch (error) {
+      console.error("Failed to update category:", error);
+    }
   };
 
   const moveCategory = (index: number, direction: -1 | 1) => {
@@ -114,40 +99,26 @@ export default function SettingsPage() {
     });
   };
 
-  // -----------------------------
-  // Item actions (mock)
-  // -----------------------------
-  const addItem = (categoryId: string) => {
+  const addItem = async (categoryId: string) => {
     const name = newItemName[categoryId]?.trim();
     if (!name) return;
 
-    const id = `item_${Date.now()}`;
+    try {
+      await fetch("/api/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryId, name }),
+      });
 
-    setCategories((prev) =>
-      prev.map((cat) =>
-        cat.id === categoryId
-          ? {
-              ...cat,
-              items: [
-                ...(cat.items ?? []),
-                {
-                  id,
-                  name,
-                  emoji: "✨",
-                  isActive: true,
-                  order: (cat.items?.length ?? 0) + 1,
-                } as any,
-              ],
-            }
-          : cat
-      )
-    );
-
-
-    setNewItemName((prev) => ({ ...prev, [categoryId]: "" }));
+      setNewItemName((prev) => ({ ...prev, [categoryId]: "" }));
+      await reloadCategories();
+    } catch (error) {
+      console.error("Failed to add item:", error);
+      alert("Failed to add item");
+    }
   };
 
-  const updateItem = (categoryId: string, itemId: string, updates: Partial<Item>) => {
+  const updateItem = async (categoryId: string, itemId: string, updates: Partial<Item>) => {
     setCategories((prev) =>
       prev.map((cat) =>
         cat.id === categoryId
@@ -158,6 +129,16 @@ export default function SettingsPage() {
           : cat
       )
     );
+
+    try {
+      await fetch(`/api/items/${itemId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+    } catch (error) {
+      console.error("Failed to update item:", error);
+    }
   };
 
   const moveItem = (category: Category, index: number, direction: -1 | 1) => {
@@ -212,9 +193,18 @@ export default function SettingsPage() {
                       className="rounded-full border border-app-border bg-transparent px-3 py-1 text-base"
                     />
                     <button
-                      onClick={() => updateCategory(category.id, { isActive: !category.isActive })}
-                      className="text-xs text-app-muted"
+                      onClick={() => {
+                        const newIsActive = !category.isActive;
+                        updateCategory(category.id, { isActive: newIsActive });
+                        if (!newIsActive) {
+                          category.items?.forEach((item) => {
+                            updateItem(category.id, item.id, { isActive: false });
+                          });
+                        }
+                      }}
+                      className="flex items-center gap-1 text-xs text-app-muted"
                     >
+                      <span className={`h-2 w-2 rounded-full ${category.isActive ? 'bg-green-500' : 'bg-red-500'}`} />
                       {category.isActive ? "停用" : "啟用"}
                     </button>
                   </div>
@@ -252,27 +242,22 @@ export default function SettingsPage() {
                               data={data}
                               theme="light"
                               onEmojiSelect={(e: any) => {
-                                // emoji-mart 回傳物件，native 是實際 emoji 字元
                                 const chosen = e.native as string;
 
-// 1) 仍可保留 itemEmoji（如果你還想用）
-// setItemEmoji((prev) => ({ ...prev, [item.id]: chosen }));
+                                setCategories((prev) =>
+                                  prev.map((cat) =>
+                                    cat.id === category.id
+                                      ? {
+                                          ...cat,
+                                          items: cat.items?.map((it) =>
+                                            it.id === item.id ? ({ ...it, emoji: chosen } as any) : it
+                                          ),
+                                        }
+                                      : cat
+                                  )
+                                );
 
-// 2) ✅ 最重要：把 emoji 存進 item 本身（存在 categories 裡）
-setCategories((prev) =>
-  prev.map((cat) =>
-    cat.id === category.id
-      ? {
-          ...cat,
-          items: cat.items?.map((it) =>
-            it.id === item.id ? ({ ...it, emoji: chosen } as any) : it
-          ),
-        }
-      : cat
-  )
-);
-
-
+                                updateItem(category.id, item.id, { emoji: chosen } as any);
                                 setEmojiPickerForItemId(null);
                               }}
                             />
@@ -294,7 +279,9 @@ setCategories((prev) =>
                           onClick={() =>
                             updateItem(category.id, item.id, { isActive: !item.isActive })
                           }
+                          className="flex items-center gap-1"
                         >
+                          <span className={`h-2 w-2 rounded-full ${item.isActive ? 'bg-green-500' : 'bg-red-500'}`} />
                           {item.isActive ? "停用" : "啟用"}
                         </button>
                         <button onClick={() => moveItem(category, itemIndex, -1)}>↑</button>
@@ -328,10 +315,6 @@ setCategories((prev) =>
           </div>
         )}
       </div>
-
-      <p className="mt-4 text-xs text-app-muted">
-        目前為 mock data（Route 2）：emoji picker 使用全 emoji 清單，之後可存 DB。
-      </p>
     </div>
   );
 }

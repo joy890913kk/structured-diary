@@ -4,16 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import TopNav from "@/components/TopNav";
 import type { Category, Item } from "@/lib/types";
 
-const LS_CATEGORIES = "sd_categories_v1";
-const LS_ENTRIES = "sd_entries_v1";
-
 type Entry = {
   id: string;
-  date: string; // yyyy-MM-dd
+  entryDate: string;
   categoryId: string;
   itemId: string;
   content: string;
   createdAt: string;
+  category?: Category;
+  item?: Item;
 };
 
 function yyyyMmDd(d: Date) {
@@ -25,7 +24,7 @@ function yyyyMmDd(d: Date) {
 
 function getMonthDays(year: number, monthIndex0: number) {
   const first = new Date(year, monthIndex0, 1);
-  const startDay = first.getDay(); // 0 Sun - 6 Sat
+  const startDay = first.getDay();
 
   const cells: Array<{ date: Date; inMonth: boolean }> = [];
   const start = new Date(year, monthIndex0, 1 - startDay);
@@ -41,80 +40,86 @@ export default function DiaryPage() {
   const today = new Date();
 
   const [categories, setCategories] = useState<Category[]>([]);
+  const [allCategoriesForDisplay, setAllCategoriesForDisplay] = useState<Category[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [entriesLoaded, setEntriesLoaded] = useState(false);
-
+  const [loading, setLoading] = useState(true);
 
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth0, setViewMonth0] = useState(today.getMonth());
   const [selectedDate, setSelectedDate] = useState<string>(yyyyMmDd(today));
 
   const [isOpen, setIsOpen] = useState(false);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
   const [formCategoryId, setFormCategoryId] = useState<string>("");
   const [formItemId, setFormItemId] = useState<string>("");
   const [formContent, setFormContent] = useState<string>("");
 
-  // -----------------------------
-  // Load categories (from localStorage, fallback to mock)
-  // -----------------------------
-  useEffect(() => {
-    const raw = localStorage.getItem(LS_CATEGORIES);
-    if (raw) {
-      try {
-        setCategories(JSON.parse(raw));
-        return;
-      } catch {}
+  // Load active categories for form selection
+  const loadCategories = async () => {
+    try {
+      const res = await fetch("/api/categories");
+      const data = await res.json();
+      setCategories(data);
+    } catch (error) {
+      console.error("Failed to load categories:", error);
     }
+  };
 
-    const mock: Category[] = [
-      {
-        id: "cat_work",
-        name: "Work",
-        isActive: true,
-        order: 1,
-        items: [
-          { id: "item_plan", name: "Plan", isActive: true, order: 1 } as Item,
-          { id: "item_execute", name: "Execute", isActive: true, order: 2 } as Item,
-        ],
-      },
-      {
-        id: "cat_health",
-        name: "Health",
-        isActive: true,
-        order: 2,
-        items: [{ id: "item_run", name: "Run", isActive: true, order: 1 } as Item],
-      },
-    ];
-    setCategories(mock);
+  // Load all categories (including inactive) for displaying historical entries
+  const loadAllCategories = async () => {
+    try {
+      const res = await fetch("/api/categories?includeInactive=true");
+      const data = await res.json();
+      setAllCategoriesForDisplay(data);
+    } catch (error) {
+      console.error("Failed to load all categories:", error);
+    }
+  };
+
+  // Load all entries from API
+  const loadEntries = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/entries");
+      const data = await res.json();
+      setEntries(data);
+    } catch (error) {
+      console.error("Failed to load entries:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCategories();
+    loadAllCategories();
+    loadEntries();
   }, []);
 
-  // -----------------------------
-  // Load entries (and normalize old storage format)
-  // -----------------------------
+  // Reload data when page becomes visible or gains focus
   useEffect(() => {
-    const raw = localStorage.getItem(LS_ENTRIES);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        const normalized: Entry[] = Array.isArray(parsed) ? parsed : [parsed];
-        setEntries(normalized);
-      } catch (e) {
-        console.error("Failed to parse entries:", e);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        loadCategories();
+        loadAllCategories();
+        loadEntries();
       }
-    }
-    // ✅ 不管有沒有資料，都標記「已經讀完」
-    setEntriesLoaded(true);
-  }, []);
-  
+    };
 
-  // -----------------------------
-  // Persist entries
-  // -----------------------------
-  useEffect(() => {
-    if (!entriesLoaded) return; // ❗ 關鍵：初始化前不准寫
-    localStorage.setItem(LS_ENTRIES, JSON.stringify(entries));
-  }, [entries, entriesLoaded]);
-  
+    const handleFocus = () => {
+      loadCategories();
+      loadAllCategories();
+      loadEntries();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, []);
 
   const activeCategories = useMemo(() => {
     return (categories ?? [])
@@ -131,17 +136,34 @@ export default function DiaryPage() {
 
   const entriesOfSelectedDate = useMemo(() => {
     return entries
-      .filter((e) => e.date === selectedDate)
+      .filter((e) => {
+        const entryDate = yyyyMmDd(new Date(e.entryDate));
+        return entryDate === selectedDate;
+      })
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }, [entries, selectedDate]);
 
-  const openAdd = () => {
-    const defaultCat = activeCategories[0];
-    const defaultItem = defaultCat?.items?.find((i) => i.isActive !== false);
+  const openAdd = async () => {
+    // Reload categories to ensure we have the latest data from settings
+    const res = await fetch("/api/categories");
+    const freshCategories = await res.json();
+    setCategories(freshCategories);
 
+    const defaultCat = freshCategories.find((c: Category) => c.isActive !== false);
+    const defaultItem = defaultCat?.items?.find((i: Item) => i.isActive !== false);
+
+    setEditingEntryId(null);
     setFormCategoryId(defaultCat?.id ?? "");
-    setFormItemId((defaultItem as any)?.id ?? "");
+    setFormItemId(defaultItem?.id ?? "");
     setFormContent("");
+    setIsOpen(true);
+  };
+
+  const openEdit = (entry: Entry) => {
+    setEditingEntryId(entry.id);
+    setFormCategoryId(entry.categoryId);
+    setFormItemId(entry.itemId);
+    setFormContent(entry.content);
     setIsOpen(true);
   };
 
@@ -153,25 +175,63 @@ export default function DiaryPage() {
     setFormItemId((firstItem as any)?.id ?? "");
   }, [formCategoryId, categories]);
 
-  const saveEntry = () => {
-    if (!selectedDate) return;
+  const saveEntry = async () => {
     if (!formCategoryId) return;
     if (!formItemId) return;
 
     const content = formContent.trim();
     if (!content) return;
 
-    const newEntry: Entry = {
-      id: `e_${Date.now()}`,
-      date: selectedDate,
-      categoryId: formCategoryId,
-      itemId: formItemId,
-      content,
-      createdAt: new Date().toISOString(),
-    };
+    try {
+      if (editingEntryId) {
+        const res = await fetch(`/api/entries/${editingEntryId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entryDate: selectedDate,
+            categoryId: formCategoryId,
+            itemId: formItemId,
+            content,
+          }),
+        });
 
-    setEntries((prev) => [newEntry, ...prev]);
-    setIsOpen(false);
+        const updatedEntry = await res.json();
+        setEntries((prev) => prev.map((e) => (e.id === editingEntryId ? updatedEntry : e)));
+      } else {
+        const res = await fetch("/api/entries", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entryDate: selectedDate,
+            categoryId: formCategoryId,
+            itemId: formItemId,
+            content,
+          }),
+        });
+
+        const newEntry = await res.json();
+        setEntries((prev) => [newEntry, ...prev]);
+      }
+
+      setIsOpen(false);
+      setFormContent("");
+      setEditingEntryId(null);
+    } catch (error) {
+      console.error("Failed to save entry:", error);
+      alert("Failed to save entry");
+    }
+  };
+
+  const deleteEntry = async (entryId: string) => {
+    if (!confirm("Are you sure you want to delete this entry?")) return;
+
+    try {
+      await fetch(`/api/entries/${entryId}`, { method: "DELETE" });
+      setEntries((prev) => prev.filter((e) => e.id !== entryId));
+    } catch (error) {
+      console.error("Failed to delete entry:", error);
+      alert("Failed to delete entry");
+    }
   };
 
   const { cells } = useMemo(() => getMonthDays(viewYear, viewMonth0), [viewYear, viewMonth0]);
@@ -199,15 +259,24 @@ export default function DiaryPage() {
     setSelectedDate(yyyyMmDd(today));
   };
 
-  const categoryName = (id: string) => categories.find((c) => c.id === id)?.name ?? "";
-
-  const itemInfo = (catId: string, itemId: string) =>
-    categories.find((c) => c.id === catId)?.items?.find((i: any) => i.id === itemId);
-
-  const itemEmojiOf = (catId: string, itemId: string) => (itemInfo(catId, itemId) as any)?.emoji ?? "";
+  const categoryName = (id: string) => allCategoriesForDisplay.find((c) => c.id === id)?.name ?? "";
 
   const itemName = (catId: string, itemId: string) =>
-    categories.find((c) => c.id === catId)?.items?.find((i) => i.id === itemId)?.name ?? "";
+    allCategoriesForDisplay.find((c) => c.id === catId)?.items?.find((i) => i.id === itemId)?.name ?? "";
+
+  const getItemEmoji = (catId: string, itemId: string) =>
+    allCategoriesForDisplay.find((c) => c.id === catId)?.items?.find((i) => i.id === itemId)?.emoji ?? "";
+
+  if (loading) {
+    return (
+      <div>
+        <TopNav />
+        <div className="flex items-center justify-center py-20">
+          <p className="text-app-muted">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -234,7 +303,7 @@ export default function DiaryPage() {
       <div className="rounded-2xl bg-app-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="text-sm font-semibold">{monthLabel}</p>
-          <p className="text-xs text-app-muted">點日期 → 右側新增紀錄</p>
+          <p className="text-xs text-app-muted">Click a date to add an entry</p>
         </div>
 
         <div className="grid grid-cols-7 gap-2 text-xs text-app-muted">
@@ -249,7 +318,7 @@ export default function DiaryPage() {
           {cells.map(({ date, inMonth }) => {
             const key = yyyyMmDd(date);
             const isSelected = key === selectedDate;
-            const hasEntry = entries.some((e) => e.date === key);
+            const hasEntry = entries.some((e) => yyyyMmDd(new Date(e.entryDate)) === key);
 
             return (
               <button
@@ -270,31 +339,45 @@ export default function DiaryPage() {
           })}
         </div>
 
-        {/* Right-ish area: selected day panel */}
         <div className="mt-4 rounded-2xl border border-app-border p-4">
           <div className="flex items-center justify-between gap-2">
             <div>
               <p className="text-xs text-app-muted">{selectedDate}</p>
-              <p className="text-sm font-semibold">今日紀錄</p>
+              <p className="text-sm font-semibold">Today's Entries</p>
             </div>
 
             <button onClick={openAdd} className="rounded-full bg-app-accent px-3 py-2 text-xs">
-              ＋ 新增
+              + Add
             </button>
           </div>
 
           {entriesOfSelectedDate.length === 0 ? (
-            <p className="mt-3 text-sm text-app-muted">當天還沒有紀錄</p>
+            <p className="mt-3 text-sm text-app-muted">No entries for this day</p>
           ) : (
             <div className="mt-3 space-y-2">
               {entriesOfSelectedDate.map((e) => (
                 <div key={e.id} className="rounded-xl bg-app-bg px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-app-border px-2 py-1 text-xs text-app-muted">
-                      {itemEmojiOf(e.categoryId, e.itemId) ? `${itemEmojiOf(e.categoryId, e.itemId)} ` : ""}
-                      {categoryName(e.categoryId)} › {itemName(e.categoryId, e.itemId)}
-                    </span>
-                    <p className="text-sm">{e.content}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2 flex-1">
+                      <span className="rounded-full border border-app-border px-2 py-1 text-xs text-app-muted">
+                        {categoryName(e.categoryId)} › {getItemEmoji(e.categoryId, e.itemId)} {itemName(e.categoryId, e.itemId)}
+                      </span>
+                      <p className="text-sm">{e.content}</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => openEdit(e)}
+                        className="rounded px-2 py-1 text-xs text-app-muted hover:bg-app-card"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => deleteEntry(e.id)}
+                        className="rounded px-2 py-1 text-xs text-red-500 hover:bg-app-card"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -303,21 +386,20 @@ export default function DiaryPage() {
         </div>
       </div>
 
-      {/* Modal */}
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 md:items-center">
           <div className="w-full max-w-lg rounded-2xl bg-app-card p-4">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold">新增紀錄</p>
+              <p className="text-sm font-semibold">{editingEntryId ? "Edit Entry" : "Add Entry"}</p>
               <button onClick={() => setIsOpen(false)} className="text-xs text-app-muted">
-                關閉
+                Close
               </button>
             </div>
 
             <div className="mt-3 space-y-3">
               <div className="grid gap-2 md:grid-cols-2">
                 <div>
-                  <p className="mb-1 text-xs text-app-muted">類別</p>
+                  <p className="mb-1 text-xs text-app-muted">Category</p>
                   <select
                     value={formCategoryId}
                     onChange={(e) => setFormCategoryId(e.target.value)}
@@ -332,7 +414,7 @@ export default function DiaryPage() {
                 </div>
 
                 <div>
-                  <p className="mb-1 text-xs text-app-muted">項目</p>
+                  <p className="mb-1 text-xs text-app-muted">Item</p>
                   <select
                     value={formItemId}
                     onChange={(e) => setFormItemId(e.target.value)}
@@ -349,22 +431,18 @@ export default function DiaryPage() {
               </div>
 
               <div>
-                <p className="mb-1 text-xs text-app-muted">內容</p>
+                <p className="mb-1 text-xs text-app-muted">Content</p>
                 <textarea
                   value={formContent}
                   onChange={(e) => setFormContent(e.target.value)}
-                  placeholder="今天做了什麼？（可簡短）"
+                  placeholder="What did you do today?"
                   className="h-28 w-full resize-none rounded-2xl border border-app-border bg-transparent px-3 py-2 text-sm"
                 />
               </div>
 
               <button onClick={saveEntry} className="w-full rounded-2xl bg-app-accent px-3 py-2 text-sm">
-                儲存
+                Save
               </button>
-
-              <p className="text-xs text-app-muted">
-                ✅ 已支援 localStorage：重整不消失
-              </p>
             </div>
           </div>
         </div>
@@ -372,4 +450,3 @@ export default function DiaryPage() {
     </div>
   );
 }
-

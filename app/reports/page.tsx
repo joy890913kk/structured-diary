@@ -27,7 +27,7 @@ export default function ReportsPage() {
   const loadData = async () => {
     setLoading(true);
     const [categoryRes, entryRes] = await Promise.all([
-      fetch("/api/categories"),
+      fetch("/api/categories?includeInactive=true"),
       fetch(`/api/entries?month=${month}`),
     ]);
     const categoryData = await categoryRes.json();
@@ -100,53 +100,92 @@ export default function ReportsPage() {
   }, [entries]);
 
   const exportExcel = () => {
-    const rows = entries.map((entry) => ({
-      date: entry.entryDate.slice(0, 10),
-      category: entry.category?.name ?? "",
-      item: entry.item?.name ?? "",
-      content: entry.content,
-      created_at: entry.createdAt,
-    }));
-
-    const categoryNames = categories.map((category) => category.name);
-    const dateMap = new Map<string, Record<string, string[]>>();
-
-    entries.forEach((entry) => {
-      const dateKey = entry.entryDate.slice(0, 10);
-      if (!dateMap.has(dateKey)) {
-        dateMap.set(dateKey, {});
+    const allDatesIn2026: string[] = [];
+    for (let month = 0; month < 12; month++) {
+      const daysInMonth = new Date(2026, month + 1, 0).getDate();
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `2026-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        allDatesIn2026.push(dateStr);
       }
-      const bucket = dateMap.get(dateKey)!;
-      const categoryName = entry.category?.name ?? "";
-      if (!bucket[categoryName]) {
-        bucket[categoryName] = [];
-      }
-      bucket[categoryName].push(entry.content);
+    }
+
+    const categoryItemMap = new Map<string, { category: string; items: string[] }>();
+    categories.forEach((category) => {
+      category.items?.forEach((item) => {
+        const key = `${category.name}::${item.name}`;
+        if (!categoryItemMap.has(key)) {
+          categoryItemMap.set(key, { category: category.name, items: [item.name] });
+        }
+      });
     });
 
-    const sortedDates = Array.from(dateMap.keys()).sort();
+    const dateEntryMap = new Map<string, Map<string, string[]>>();
+    entries.forEach((entry) => {
+      const dateKey = entry.entryDate.slice(0, 10);
+      if (!dateEntryMap.has(dateKey)) {
+        dateEntryMap.set(dateKey, new Map());
+      }
+      const categoryName = entry.category?.name ?? "";
+      const itemName = entry.item?.name ?? "";
+      const key = `${categoryName}::${itemName}`;
 
-    const gridRows = sortedDates.map((dateKey) => {
-      const record = dateMap.get(dateKey)!;
-      const row: Record<string, string> = {
-        date: formatDate(parseISO(dateKey), "yyyy-MM-dd"),
-      };
-      categoryNames.forEach((name) => {
-        row[name] = record[name]?.join("\n") ?? "";
+      const entryMap = dateEntryMap.get(dateKey)!;
+      if (!entryMap.has(key)) {
+        entryMap.set(key, []);
+      }
+      entryMap.get(key)!.push(entry.content);
+    });
+
+    const headerRow1: string[] = ["Date"];
+    const headerRow2: string[] = [""];
+
+    Array.from(categoryItemMap.values()).forEach(({ category, items }) => {
+      items.forEach((item) => {
+        headerRow1.push(category);
+        headerRow2.push(item);
       });
+    });
+
+    const dataRows = allDatesIn2026.map((date) => {
+      const row: (string | number)[] = [date];
+      const entryMap = dateEntryMap.get(date) || new Map();
+
+      Array.from(categoryItemMap.keys()).forEach((key) => {
+        const contents = entryMap.get(key) || [];
+        row.push(contents.join("; "));
+      });
+
       return row;
     });
 
     const workbook = XLSX.utils.book_new();
-    const sheet1 = XLSX.utils.json_to_sheet(rows);
-    XLSX.utils.book_append_sheet(workbook, sheet1, "Event Log");
+    const worksheetData = [headerRow1, headerRow2, ...dataRows];
+    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
 
-    const sheet2 = XLSX.utils.json_to_sheet(gridRows, {
-      header: ["date", ...categoryNames],
+    worksheet['!merges'] = [];
+    let colIndex = 1;
+    const categoryGroups = new Map<string, { start: number; count: number }>();
+
+    Array.from(categoryItemMap.values()).forEach(({ category, items }) => {
+      if (!categoryGroups.has(category)) {
+        categoryGroups.set(category, { start: colIndex, count: 0 });
+      }
+      const group = categoryGroups.get(category)!;
+      group.count += items.length;
+      colIndex += items.length;
     });
-    XLSX.utils.book_append_sheet(workbook, sheet2, "Structured Diary Grid");
 
-    XLSX.writeFile(workbook, `structured-diary-${month}.xlsx`);
+    categoryGroups.forEach((group) => {
+      if (group.count > 1) {
+        worksheet['!merges']!.push({
+          s: { r: 0, c: group.start },
+          e: { r: 0, c: group.start + group.count - 1 }
+        });
+      }
+    });
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, "2026 Diary");
+    XLSX.writeFile(workbook, `structured-diary-2026.xlsx`);
   };
 
   return (
@@ -175,83 +214,102 @@ export default function ReportsPage() {
 
       {loading ? (
         <p className="text-sm text-app-muted">載入中...</p>
-      ) : entries.length === 0 ? (
-        <p className="text-sm text-app-muted">本月沒有紀錄可供分析。</p>
       ) : (
         <div className="space-y-6">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-2xl bg-app-card p-4">
               <h2 className="mb-4 text-sm font-semibold">Category 佔比</h2>
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={stats.list}
-                      dataKey="count"
-                      nameKey="name"
-                      outerRadius={80}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                    >
-                      {stats.list.map((entry, index) => (
-                        <Cell
-                          key={entry.id}
-                          fill={entry.color || colorPalette[index % colorPalette.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
+              <div className="h-56 flex items-center justify-center">
+                {stats.list.length === 0 ? (
+                  <p className="text-sm text-app-muted">本月沒有紀錄</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={stats.list}
+                        dataKey="count"
+                        nameKey="name"
+                        outerRadius={80}
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      >
+                        {stats.list.map((entry, index) => (
+                          <Cell
+                            key={entry.id}
+                            fill={entry.color || colorPalette[index % colorPalette.length]}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </div>
             <div className="rounded-2xl bg-app-card p-4">
               <h2 className="mb-4 text-sm font-semibold">Category 統計</h2>
-              <div className="space-y-3">
-                {stats.list.map((entry, index) => (
-                  <div key={entry.id} className="rounded-xl border border-app-border p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="h-2.5 w-2.5 rounded-full"
-                          style={{
-                            backgroundColor: entry.color || colorPalette[index % colorPalette.length],
-                          }}
-                        />
-                        <p className="text-sm font-semibold">{entry.name}</p>
+              {stats.list.length === 0 ? (
+                <p className="text-sm text-app-muted">本月沒有紀錄</p>
+              ) : (
+                <div className="space-y-3">
+                  {stats.list.map((entry, index) => (
+                    <div key={entry.id} className="rounded-xl border border-app-border p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 rounded-full"
+                            style={{
+                              backgroundColor: entry.color || colorPalette[index % colorPalette.length],
+                            }}
+                          />
+                          <p className="text-sm font-semibold">{entry.name}</p>
+                        </div>
+                        <p className="text-xs text-app-muted">
+                          {entry.count} 次 ({((entry.count / stats.total) * 100).toFixed(0)}%)
+                        </p>
                       </div>
-                      <p className="text-xs text-app-muted">
-                        {entry.count} 次 ({((entry.count / stats.total) * 100).toFixed(0)}%)
-                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2 text-xs text-app-muted">
+                        {entry.items.map(([name, count]) => (
+                          <span key={name} className="rounded-full border border-app-border px-2 py-1">
+                            {name} · {count}
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-app-muted">
-                      {entry.items.map(([name, count]) => (
-                        <span key={name} className="rounded-full border border-app-border px-2 py-1">
-                          {name} · {count}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
           <div className="rounded-2xl bg-app-card p-4">
             <h2 className="mb-4 text-sm font-semibold">最近紀錄 Preview</h2>
-            <div className="space-y-4">
-              {stats.list.map((entry) => (
-                <div key={entry.id} className="rounded-xl border border-app-border p-3">
-                  <p className="text-sm font-semibold">{entry.name}</p>
-                  <div className="mt-2 space-y-2 text-xs text-app-muted">
-                    {(recentEntriesByCategory.get(entry.id) ?? []).slice(0, 3).map((item) => (
-                      <p key={item.id}>
-                        {item.content.length > 60 ? `${item.content.slice(0, 60)}...` : item.content}
-                      </p>
-                    ))}
+            {stats.list.length === 0 ? (
+              <p className="text-sm text-app-muted">本月沒有紀錄</p>
+            ) : (
+              <div className="space-y-4">
+                {stats.list.map((entry) => (
+                  <div key={entry.id} className="rounded-xl border border-app-border p-3">
+                    <p className="text-sm font-semibold">{entry.name}</p>
+                    {(recentEntriesByCategory.get(entry.id) ?? []).length === 0 ? (
+                      <p className="mt-2 text-xs text-app-muted">此類別沒有紀錄</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {(recentEntriesByCategory.get(entry.id) ?? []).slice(0, 5).map((item) => (
+                          <div key={item.id} className="flex items-start gap-2 rounded-lg bg-app-bg px-3 py-2">
+                            <span className="shrink-0 rounded-full border border-app-border px-2 py-0.5 text-xs text-app-muted">
+                              {item.item?.emoji ? `${item.item.emoji} ` : ""}{item.item?.name ?? ""}
+                            </span>
+                            <p className="min-w-0 flex-1 text-sm">
+                              {item.content.length > 80 ? `${item.content.slice(0, 80)}...` : item.content}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -11,6 +11,7 @@ export type Item = {
   id: string;
   categoryId: string;
   name: string;
+  emoji?: string | null;
   order: number;
   isActive: boolean;
 };

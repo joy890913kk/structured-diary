@@ -13,9 +13,9 @@ async function main() {
       order: 1,
       color: "#3b82f6",
       items: [
-        { name: "專案開發", order: 1 },
-        { name: "會議", order: 2 },
-        { name: "學習", order: 3 },
+        { name: "專案開發", emoji: "💻", order: 1 },
+        { name: "會議", emoji: "🤝", order: 2 },
+        { name: "學習", emoji: "📚", order: 3 },
       ],
     },
     {
@@ -23,9 +23,9 @@ async function main() {
       order: 2,
       color: "#22c55e",
       items: [
-        { name: "運動", order: 1 },
-        { name: "睡眠", order: 2 },
-        { name: "飲食", order: 3 },
+        { name: "運動", emoji: "🏃", order: 1 },
+        { name: "睡眠", emoji: "😴", order: 2 },
+        { name: "飲食", emoji: "🍎", order: 3 },
       ],
     },
     {
@@ -33,9 +33,9 @@ async function main() {
       order: 3,
       color: "#f59e0b",
       items: [
-        { name: "家務", order: 1 },
-        { name: "娛樂", order: 2 },
-        { name: "社交", order: 3 },
+        { name: "家務", emoji: "🏠", order: 1 },
+        { name: "娛樂", emoji: "🎮", order: 2 },
+        { name: "社交", emoji: "👥", order: 3 },
       ],
     },
   ];
